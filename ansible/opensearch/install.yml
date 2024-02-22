@@ -1,0 +1,208 @@
+---
+- name: Install OpenSearch with Helm
+  hosts: localhost
+  connection: local
+  vars:
+    ns: opensearch
+    opensearch_nodes_dn: "emailAddress=admin@example.com,CN=*.example.com,OU=DE,O=DE,L=Tucson,ST=AZ,C=US"
+    opensearch_admin_dn: "emailAddress=admin@example.com,CN=OpenSearchAdmin,OU=DE,O=DE,L=Tucson,ST=AZ,C=US"
+    opensearch_cpu_request: 24
+    opensearch_memory_request: "128"
+    opensearch_cpu_limit: 40
+    opensearch_memory_limit: "240"
+    openid_realm_base: "https://kc.cyverse.org/auth/realms/CyVerse/"
+    admin_pw_hash: ""
+    de_user_pw_hash: ""
+  tasks:
+    - name: Add OpenSearch Helm Repository
+      environment:
+        KUBECONFIG: "{{ lookup('env', 'KUBECONFIG') }}"
+      kubernetes.core.helm_repository:
+        name: opensearch
+        repo_url: https://opensearch-project.github.io/helm-charts/
+        state: present
+
+    - name: Create namespace
+      environment:
+        KUBECONFIG: "{{ lookup('env', 'KUBECONFIG') }}"
+      kubernetes.core.k8s:
+        name: "{{ ns }}"
+        state: present
+        kind: namespace
+        api_version: v1
+
+    - name: Create helm values.yaml file
+      ansible.builtin.copy:
+        content: |
+          clusterName: "de-opensearch"
+          nodeGroup: "cluster-manager"
+          masterService: "de-opensearch-cluster-manager"
+          roles:
+            - "cluster_manager"
+            - "ingest"
+            - "data"
+            - "remote_cluster_client"
+          replicas: 3
+          config:
+            opensearch.yml: |
+              cluster.name: de-opensearch
+              cluster.initial_cluster_manager_nodes:
+                - de-opensearch-cluster-manager-0
+                - de-opensearch-cluster-manager-1
+                - de-opensearch-cluster-manager-2
+              network.host: 0.0.0.0
+              plugins:
+                security:
+                  allow_default_init_securityindex: true
+                  ssl:
+                    transport:
+                      pemcert_filepath: ssl/node.pem
+                      pemkey_filepath: ssl/node-key.pem
+                      pemcrustedcas_filepath: ssl/root-ca.pem
+                      enforce_hostname_verification: false
+                    http:
+                      enabled: true
+                      pemcert_filepath: ssl/node.pem
+                      pemkey_filepath: ssl/node-key.pem
+                      pemcrustedcas_filepath: ssl/root-ca.pem
+                  nodes_dn:
+                    - "{{ opensearch_nodes_dn }}"
+                  authcz:
+                    admin_dn:
+                      - "{{ opensearch_admin_dn }}"
+          extraEnvs:
+            - name: DISABLE_INSTALL_DEMO_CONFIG
+              value: "true"
+          secretMounts:
+            - name: "opensearch-tls"
+              secretName: "opensearch-tls"
+              path: "/usr/share/opensearch/config/ssl"
+          opensearchJavaOpts: "-Xmx{{ opensearch_memory_request }}g -Xms{{ opensearch_memory_request }}g"
+          resources:
+            requests:
+              cpu: "{{ opensearch_cpu_request }}"
+              memory: "{{ opensearch_memory_request }}Gi"
+            limits:
+              cpu: "{{ opensearch_cpu_limit }}"
+              memory: "{{ opensearch_memory_limit }}Gi"
+          persistence:
+            size: "3Ti"
+            storageClass: "longhorn"
+          service:
+            type: "NodePort"
+            nodePort: 31450
+          securityConfig:
+            config:
+              data:
+                config.yml: |
+                  _meta:
+                    type: "config"
+                    config_version: 2
+                  config:
+                    dynamic:
+                      http:
+                        anonymous_auth_enabled: false
+                      authc:
+                        basic_internal_auth_domain:
+                          http_enabled: true
+                          transport_enabled: true
+                          order: 0
+                          http_authenticator:
+                            type: basic
+                            challenge: false
+                          authentication_backend:
+                            type: internal
+                        openid_auth_domain:
+                          http_enabled: true
+                          transport_enabled: true
+                          order: 1
+                          http_authenticator:
+                            type: openid
+                            challenge: false
+                            config:
+                              openid_connect_idp:
+                                enable_ssl: true
+                                verify_hostnames: true
+                              subject_key: preferred_username
+                              roles_key: roles
+                              openid_connect_url: "{{ openid_realm_base }}/.well-known/openid-configuration"
+                          authentication_backend:
+                            type: noop
+                roles.yml: |
+                  _meta:
+                    type: "roles"
+                    config_version: 2
+                internal_users.yml: |
+                  _meta:
+                    type: "internalusers"
+                    config_version: 2
+                  admin:
+                    hash: "{{ admin_pw_hash }}"
+                    reserved: true
+                    backend_roles:
+                    - "admin"
+                    description: "Admin User"
+                  de-user:
+                    hash: "{{ de_user_pw_hash }}"
+                    reserved: true
+                    backend_roles:
+                    - "admin"
+                    description: "Account used by DE services."
+                roles_mapping.yml: |
+                  _meta:
+                    type: "rolesmapping"
+                    config_version: 2
+                  manage_snapshots:
+                    reserved: true
+                    hidden: false
+                    backend_roles:
+                    - "snapshotrestore"
+                    hosts: []
+                    users: []
+                    and_backend_roles: []
+                  logstash:
+                    reserved: false
+                    hidden: false
+                    backend_roles:
+                    - "logstash"
+                    hosts: []
+                    users: []
+                    and_backend_roles: []
+                  own_index:
+                    reserved: false
+                    hidden: false
+                    backend_roles: []
+                    hosts: []
+                    users:
+                    - "*"
+                    and_backend_roles: []
+                    description: "Allow full access to an index named like the username"
+                  kibana_user:
+                    reserved: false
+                    hidden: false
+                    backend_roles:
+                    - "kibanauser"
+                action_groups.yml: |
+                  _meta:
+                    type: "actiongroups"
+                    config_version: 2
+                tenants.yml: |
+                  _meta:
+                    type: "tenants"
+                    config_version: 2
+                nodes_dn.yml: |
+                  _meta:
+                    type: "nodesdn"
+                    config_version: 2
+        dest: "./values.yaml"
+
+    - name: Install OpenSearch helm chart
+      environment:
+        KUBECONFIG: "{{ lookup('env', 'KUBECONFIG') }}"
+      kubernetes.core.helm:
+        name: de-opensearch
+        chart_ref: opensearch/opensearch
+        release_namespace: "{{ ns }}"
+        wait: true
+        values_files:
+          - "./values.yaml"
