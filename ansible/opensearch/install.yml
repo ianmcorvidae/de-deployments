@@ -10,6 +10,7 @@
     opensearch_memory_request: "128"
     opensearch_cpu_limit: 40
     opensearch_memory_limit: "240"
+    opensearch_storageclass: "longhorn"
     openid_realm_base: "https://kc.cyverse.org/auth/realms/CyVerse/"
     admin_pw_hash: ""
     de_user_pw_hash: ""
@@ -87,7 +88,7 @@
               memory: "{{ opensearch_memory_limit }}Gi"
           persistence:
             size: "3Ti"
-            storageClass: "longhorn"
+            storageClass: "{{ opensearch_storageclass }}"
           service:
             type: "NodePort"
             nodePort: 31450
